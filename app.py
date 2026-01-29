@@ -173,7 +173,7 @@ with col_form:
                 st.session_state.edit_idx = None; st.rerun()
 
 with col_list:
-    st.subheader("🛒 Aktuelle Liste")
+    st.subheader("🛒 Aktuelle Schimmel Liste")
     for idx, itm in enumerate(st.session_state.current_items):
         with st.container(border=True):
             cols = st.columns([4, 1, 1])
