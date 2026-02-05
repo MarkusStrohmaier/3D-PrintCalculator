@@ -1,2 +1,12 @@
+.venv/
 venv/
 projekte.db
+env/
+ENV/
+.venvs/
+venvs/
+# Python caches
+__pycache__/
+.pytest_cache/
+# virtual environment variable files
+.env
