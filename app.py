@@ -176,6 +176,13 @@ def create_styled_pdf(project, username=None):
     pdf.set_font("Arial", 'B', 20); pdf.set_text_color(0, 0, 0); pdf.cell(40, 10, safe(f"{total_sum:.2f} EUR"), align='R', ln=True)
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
+
+def format_eur(v: float) -> str:
+    try:
+        return f"{float(v):.2f} €"
+    except Exception:
+        return "0.00 €"
+
 # --- UI LOGIK ---
 st.set_page_config(page_title="MaxlDruck Pro", layout="wide")
 
@@ -316,14 +323,21 @@ with tab_calc:
 
         with col_list:
             st.subheader("🛒 Aktuelle Liste")
-            for idx, itm in enumerate(st.session_state.current_items):
-                with st.container(border=True):
-                    cols = st.columns([4, 1, 1])
-                    cols[0].write(f"**{itm['Name']}** ({itm['Details']}) - {itm['Kosten (€)']} EUR")
-                    if cols[1].button("✏️", key=f"ei_{idx}"): st.session_state.edit_idx = idx; do_rerun()
-                    if cols[2].button("🗑️", key=f"di_{idx}"): st.session_state.current_items.pop(idx); do_rerun()
-
+            # Show items as a tidy table
             if st.session_state.current_items:
+                df = pd.DataFrame([{"Bezeichnung": it["Name"], "Details": it.get("Details", ""), "Kosten": it.get("Kosten (€)", 0.0)} for it in st.session_state.current_items])
+                df["Kosten"] = df["Kosten"].map(lambda x: format_eur(x))
+                st.table(df)
+
+                # action buttons below table for edit/delete
+                for idx, itm in enumerate(st.session_state.current_items):
+                    r1, r2 = st.columns([6,1])
+                    r1.write(f"**{itm['Name']}** — {itm.get('Details','')}")
+                    if r2.button("✏️", key=f"ei_{idx}"):
+                        st.session_state.edit_idx = idx; do_rerun()
+                    if r2.button("🗑️", key=f"di_{idx}"):
+                        st.session_state.current_items.pop(idx); do_rerun()
+
                 if st.button("💾 PROJEKT FINAL SPEICHERN", use_container_width=True, type="primary"):
                     if st.session_state.editing_project_id:
                         old = user_db.query(Project).filter(Project.id == st.session_state.editing_project_id).first()
@@ -336,6 +350,22 @@ with tab_calc:
                         new_p.items.append(ProjectItem(item_type=i['Typ'], name=i['Name'], weight=i['Gewicht (g)'], cost=i['Kosten (€)'], details=i['Details']))
                     user_db.add(new_p); user_db.commit()
                     st.session_state.current_items = []; st.session_state.p_name = ""; st.session_state.editing_project_id = None; do_rerun()
+
+                # Nice summary panel
+                subtotal = sum(i.get("Kosten (€)", 0.0) for i in st.session_state.current_items)
+                wh = float(st.session_state.work_hours or 0.0)
+                wr = float(st.session_state.work_rate or 0.0)
+                work_cost = wh * wr if (wh and wr) else 0.0
+                ff_g = float(st.session_state.failed_filament_g or 0.0)
+                ff_cost = 0.0
+                if ff_g and st.session_state.failed_material:
+                    mat = global_db.query(Material).filter(Material.name == st.session_state.failed_material).first()
+                    if mat and mat.price_per_kg:
+                        ff_cost = (mat.price_per_kg / 1000.0) * ff_g
+                s1, s2, s3 = st.columns(3)
+                s1.metric("Zwischensumme", format_eur(subtotal))
+                s2.metric("Arbeitskosten (optional)", format_eur(work_cost))
+                s3.metric("Fehldruck (optional)", format_eur(ff_cost))
 
             st.divider()
             st.header("📂 Archiv")
