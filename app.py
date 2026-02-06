@@ -174,6 +174,10 @@ def create_styled_pdf(project, username=None):
 
     pdf.ln(7); pdf.set_font("Arial", 'B', 14); pdf.set_text_color(*accent_color); pdf.cell(130, 10, safe("GESAMTSUMME"), align='R')
     pdf.set_font("Arial", 'B', 20); pdf.set_text_color(0, 0, 0); pdf.cell(40, 10, safe(f"{total_sum:.2f} EUR"), align='R', ln=True)
+    # Credit / source line - placed where there's space on the invoice
+    pdf.ln(8)
+    pdf.set_font("Arial", size=8); pdf.set_text_color(100, 100, 100)
+    pdf.cell(0, 5, safe('erstellt mit : "https://3d-calculator.streamlit.app/"'), ln=True)
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 
@@ -197,6 +201,7 @@ if 'work_hours' not in st.session_state: st.session_state.work_hours = 0.0
 if 'work_rate' not in st.session_state: st.session_state.work_rate = 0.0
 if 'failed_filament_g' not in st.session_state: st.session_state.failed_filament_g = 0.0
 if 'failed_material' not in st.session_state: st.session_state.failed_material = ""
+if 'confirm_delete_account' not in st.session_state: st.session_state.confirm_delete_account = False
 
 def do_rerun():
     try:
@@ -246,6 +251,28 @@ with st.sidebar:
         if st.button("Abmelden"):
             st.session_state.username = None
             do_rerun()
+        # Allow user to delete their own account (with confirmation)
+        if not st.session_state.confirm_delete_account:
+            if st.button("Meinen Account löschen"):
+                st.session_state.confirm_delete_account = True
+        else:
+            st.warning("Willst du wirklich dein Konto löschen? Diese Aktion ist dauerhaft.")
+            cdel, ccancel = st.columns([1,1])
+            if cdel.button("Ja, Konto löschen"):
+                name = st.session_state.username
+                found = auth_db.query(User).filter(User.name == name).first()
+                if found:
+                    auth_db.delete(found); auth_db.commit()
+                    _, path = get_user_engine(name)
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+                st.session_state.username = None
+                st.session_state.confirm_delete_account = False
+                do_rerun()
+            if ccancel.button("Abbrechen"):
+                st.session_state.confirm_delete_account = False
 
     st.divider(); st.header("⚙️ Stammdaten")
     with st.expander("Filament & Drucker"):
@@ -407,17 +434,11 @@ with tab_users:
 
     st.subheader("Bestehende Benutzer")
     for u in auth_db.query(User).all():
-        col_u1, col_u2 = st.columns([4, 1])
-        col_u1.write(f"👤 {u.name}")
-        if col_u2.button("Löschen", key=f"del_u_{u.id}"):
-            # delete auth entry and remove user DB file
-            auth_db.delete(u); auth_db.commit()
-            _, path = get_user_engine(u.name)
-            try:
-                os.remove(path)
-            except Exception:
-                pass
-            do_rerun()
+        # show user list but do not allow deleting other users
+        label = f"👤 {u.name}"
+        if u.name == st.session_state.username:
+            label += " (du)"
+        st.write(label)
 
 # --- TAB 3: STATISTIKEN ---
 with tab_stats:
