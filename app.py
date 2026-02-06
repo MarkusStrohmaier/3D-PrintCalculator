@@ -43,6 +43,10 @@ class Project(ProjectBase):
     id = Column(Integer, primary_key=True)
     name = Column(String, nullable=False)
     customer_name = Column(String, nullable=True)
+    work_hours = Column(Float, default=0.0)
+    work_rate = Column(Float, default=0.0)
+    failed_filament_g = Column(Float, default=0.0)
+    failed_material = Column(String, nullable=True)
     created_at = Column(String, default=datetime.now().strftime("%d. %B %Y"))
     items = relationship("ProjectItem", back_populates="project", cascade="all, delete-orphan")
 
@@ -90,8 +94,17 @@ def ensure_user_db(username: str):
         with engine.connect() as conn:
             infos = conn.execute(text("PRAGMA table_info(projects);")).fetchall()
             cols = [row[1] for row in infos] if infos else []
-            if infos and 'customer_name' not in cols:
-                conn.execute(text("ALTER TABLE projects ADD COLUMN customer_name TEXT;"))
+            if infos:
+                if 'customer_name' not in cols:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN customer_name TEXT;"))
+                if 'work_hours' not in cols:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN work_hours REAL DEFAULT 0.0;"))
+                if 'work_rate' not in cols:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN work_rate REAL DEFAULT 0.0;"))
+                if 'failed_filament_g' not in cols:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN failed_filament_g REAL DEFAULT 0.0;"))
+                if 'failed_material' not in cols:
+                    conn.execute(text("ALTER TABLE projects ADD COLUMN failed_material TEXT;"))
     except Exception:
         # If anything goes wrong we silently continue; reading uses getattr so missing
         # attribute won't crash.
@@ -102,31 +115,65 @@ def ensure_user_db(username: str):
 def create_styled_pdf(project, username=None):
     pdf = FPDF()
     pdf.add_page(); pdf.set_margins(20, 20, 20)
+    def safe(txt):
+        if txt is None:
+            return ""
+        if not isinstance(txt, str):
+            txt = str(txt)
+        # replace common problematic symbols (euro) and ensure latin-1 encodability
+        txt = txt.replace('€', 'EUR')
+        return txt.encode('latin-1', 'replace').decode('latin-1')
     accent_color = (26, 64, 102)
-    pdf.set_font("Arial", 'B', 38); pdf.set_text_color(*accent_color); pdf.cell(0, 20, "MaxlDruck", ln=True)
-    pdf.set_font("Arial", '', 12); pdf.set_text_color(50, 50, 50); pdf.cell(0, 10, "MATERIALPREISLISTE / KALKULATION", ln=True)
+    pdf.set_font("Arial", 'B', 38); pdf.set_text_color(*accent_color); pdf.cell(0, 20, safe("MaxlDruck"), ln=True)
+    pdf.set_font("Arial", '', 12); pdf.set_text_color(50, 50, 50); pdf.cell(0, 10, safe("MATERIALPREISLISTE / KALKULATION"), ln=True)
     pdf.set_font("Arial", size=10); pdf.set_y(20)
-    pdf.cell(0, 5, f"PROJEKT-NR: {project.id + 1000}", ln=True, align='R')
-    pdf.cell(0, 5, f"{datetime.now().strftime('%d. %B %Y').upper()}", ln=True, align='R')
+    pdf.cell(0, 5, safe(f"PROJEKT-NR: {project.id + 1000}"), ln=True, align='R')
+    pdf.cell(0, 5, safe(f"{datetime.now().strftime('%d. %B %Y').upper()}"), ln=True, align='R')
     pdf.set_draw_color(*accent_color); pdf.set_line_width(1.5); pdf.line(20, 55, 190, 55)
     pdf.set_y(65); pdf.set_font("Arial", 'B', 11); pdf.set_text_color(0, 0, 0)
     # prefer project.customer_name if available
     u_name = (getattr(project, 'customer_name', None) or username) or "Kein User"
-    pdf.cell(0, 10, f"PROJEKT: {project.name.upper()} | KUNDE: {u_name}", ln=True); pdf.ln(5)
+    pdf.cell(0, 10, safe(f"PROJEKT: {project.name.upper()} | KUNDE: {u_name}"), ln=True); pdf.ln(5)
     pdf.set_fill_color(*accent_color); pdf.set_text_color(255, 255, 255); pdf.set_font("Arial", 'B', 10)
-    pdf.cell(90, 10, " BESCHREIBUNG", fill=True); pdf.cell(25, 10, "ANZAHL", fill=True, align='C')
-    pdf.cell(25, 10, "PREIS", fill=True, align='R'); pdf.cell(30, 10, "SUMME ", fill=True, align='R', ln=True)
+    pdf.cell(90, 10, safe(" BESCHREIBUNG"), fill=True); pdf.cell(25, 10, safe("ANZAHL"), fill=True, align='C')
+    pdf.cell(25, 10, safe("PREIS"), fill=True, align='R'); pdf.cell(30, 10, safe("SUMME "), fill=True, align='R', ln=True)
     pdf.set_text_color(0, 0, 0); pdf.set_font("Arial", size=10); pdf.set_draw_color(200, 200, 200)
     total_sum = 0
     for item in project.items:
-        pdf.cell(90, 12, f" {item.name}", border='B')
+        pdf.cell(90, 12, safe(f" {item.name}"), border='B')
         anz_str = item.details.split(" ")[0] if item.details and "Stk" in item.details else "1"
-        pdf.cell(25, 12, anz_str, border='B', align='C')
-        pdf.cell(25, 12, f"{item.cost:.2f} EUR", border='B', align='R')
-        pdf.cell(30, 12, f"{item.cost:.2f} EUR", border='B', align='R', ln=True)
+        pdf.cell(25, 12, safe(anz_str), border='B', align='C')
+        pdf.cell(25, 12, safe(f"{item.cost:.2f} EUR"), border='B', align='R')
+        pdf.cell(30, 12, safe(f"{item.cost:.2f} EUR"), border='B', align='R', ln=True)
         total_sum += item.cost
-    pdf.ln(15); pdf.set_font("Arial", 'B', 14); pdf.set_text_color(*accent_color); pdf.cell(130, 10, "GESAMTSUMME", align='R')
-    pdf.set_font("Arial", 'B', 20); pdf.set_text_color(0, 0, 0); pdf.cell(40, 10, f"{total_sum:.2f} EUR", align='R', ln=True)
+    # Optional: Arbeitsstunden und Fehldruck als separate Zeilen (werden NICHT zur Gesamtsumme addiert)
+    pdf.ln(8)
+    pdf.set_font("Arial", size=10); pdf.set_text_color(0, 0, 0)
+    # Arbeitsstunden
+    wh = float(getattr(project, 'work_hours', 0.0) or 0.0)
+    wr = float(getattr(project, 'work_rate', 0.0) or 0.0)
+    if wh and wr:
+        work_cost = wh * wr
+        pdf.cell(115, 8, safe(f"Arbeitsstunden: {wh:.2f} h @ {wr:.2f} EUR/h"), border='B')
+        pdf.cell(40, 8, safe(f"{work_cost:.2f} EUR"), border='B', align='R', ln=True)
+        pdf.set_font("Arial", size=8); pdf.cell(0, 5, safe("(Nicht in Gesamtsumme enthalten)"), ln=True)
+        pdf.set_font("Arial", size=10)
+
+    # Fehldruck Filament
+    ff_g = float(getattr(project, 'failed_filament_g', 0.0) or 0.0)
+    ff_mat = getattr(project, 'failed_material', None)
+    if ff_g and ff_mat:
+        # find material price
+        mat = global_db.query(Material).filter(Material.name == ff_mat).first()
+        if mat and mat.price_per_kg:
+            ff_cost = (mat.price_per_kg / 1000.0) * ff_g
+            pdf.cell(115, 8, safe(f"Fehldruckfilament: {ff_g:.0f} g ({ff_mat})"), border='B')
+            pdf.cell(40, 8, safe(f"{ff_cost:.2f} EUR"), border='B', align='R', ln=True)
+            pdf.set_font("Arial", size=8); pdf.cell(0, 5, safe("(Nicht in Gesamtsumme enthalten)"), ln=True)
+            pdf.set_font("Arial", size=10)
+
+    pdf.ln(7); pdf.set_font("Arial", 'B', 14); pdf.set_text_color(*accent_color); pdf.cell(130, 10, safe("GESAMTSUMME"), align='R')
+    pdf.set_font("Arial", 'B', 20); pdf.set_text_color(0, 0, 0); pdf.cell(40, 10, safe(f"{total_sum:.2f} EUR"), align='R', ln=True)
     return pdf.output(dest='S').encode('latin-1', 'replace')
 
 # --- UI LOGIK ---
@@ -139,6 +186,10 @@ if 'editing_project_id' not in st.session_state: st.session_state.editing_projec
 if 'username' not in st.session_state: st.session_state.username = None
 if '_rerun_req' not in st.session_state: st.session_state['_rerun_req'] = False
 if 'customer_name' not in st.session_state: st.session_state.customer_name = ""
+if 'work_hours' not in st.session_state: st.session_state.work_hours = 0.0
+if 'work_rate' not in st.session_state: st.session_state.work_rate = 0.0
+if 'failed_filament_g' not in st.session_state: st.session_state.failed_filament_g = 0.0
+if 'failed_material' not in st.session_state: st.session_state.failed_material = ""
 
 def do_rerun():
     try:
@@ -222,6 +273,18 @@ with tab_calc:
                 st.session_state.p_name = st.text_input("Projekt Name", value=st.session_state.p_name)
                 st.session_state.customer_name = st.text_input("Kundenname", value=st.session_state.customer_name)
 
+                # Zusatzfelder: Arbeitsstunden und Fehldruck
+                cols_add = st.columns([1, 1, 1, 1])
+                cols_add[0].write("**Arbeitsstunden (h)**")
+                st.session_state.work_hours = cols_add[0].number_input("", min_value=0.0, value=float(st.session_state.work_hours), key='in_work_hours')
+                cols_add[1].write("**Stundensatz (€/h)**")
+                st.session_state.work_rate = cols_add[1].number_input("", min_value=0.0, value=float(st.session_state.work_rate), key='in_work_rate')
+                cols_add[2].write("**Fehldruck Filament (g)**")
+                st.session_state.failed_filament_g = cols_add[2].number_input("", min_value=0.0, value=float(st.session_state.failed_filament_g), key='in_failed_g')
+                # Material Auswahl für Fehldruck (optional)
+                m_names = [""] + [m.name for m in global_db.query(Material).all()]
+                st.session_state.failed_material = cols_add[3].selectbox("Material (Fehldruck)", m_names, index=(m_names.index(st.session_state.failed_material) if st.session_state.failed_material in m_names else 0), key='in_failed_mat')
+
                 st.divider()
                 i_type = st.radio("Typ", ["Druckteil", "Zubehör"], index=0 if not is_item_edit or edit_val.get('Typ') == "Druck" else 1, horizontal=True)
                 i_name = st.text_input("Bezeichnung", value=edit_val.get('Name', ""))
@@ -266,7 +329,9 @@ with tab_calc:
                         old = user_db.query(Project).filter(Project.id == st.session_state.editing_project_id).first()
                         if old:
                             user_db.delete(old)
-                    new_p = Project(name=st.session_state.p_name, customer_name=st.session_state.customer_name)
+                    new_p = Project(name=st.session_state.p_name, customer_name=st.session_state.customer_name,
+                                    work_hours=float(st.session_state.work_hours), work_rate=float(st.session_state.work_rate),
+                                    failed_filament_g=float(st.session_state.failed_filament_g), failed_material=st.session_state.failed_material or None)
                     for i in st.session_state.current_items:
                         new_p.items.append(ProjectItem(item_type=i['Typ'], name=i['Name'], weight=i['Gewicht (g)'], cost=i['Kosten (€)'], details=i['Details']))
                     user_db.add(new_p); user_db.commit()
@@ -282,6 +347,10 @@ with tab_calc:
                             st.session_state.editing_project_id = proj.id
                             st.session_state.p_name = proj.name
                             st.session_state.customer_name = getattr(proj, 'customer_name', "") or ""
+                            st.session_state.work_hours = float(getattr(proj, 'work_hours', 0.0) or 0.0)
+                            st.session_state.work_rate = float(getattr(proj, 'work_rate', 0.0) or 0.0)
+                            st.session_state.failed_filament_g = float(getattr(proj, 'failed_filament_g', 0.0) or 0.0)
+                            st.session_state.failed_material = getattr(proj, 'failed_material', "") or ""
                             st.session_state.current_items = [{"Typ": i.item_type, "Name": i.name, "Gewicht (g)": i.weight, "Kosten (€)": i.cost, "Details": i.details} for i in proj.items]
                             do_rerun()
                     with c2: st.download_button("📄 PDF", data=create_styled_pdf(proj, username), file_name=f"{proj.name}.pdf", key=f"pdf_{proj.id}")
